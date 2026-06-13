@@ -1,3 +1,7 @@
 linter/log
 libpsl
 coverage.out
+__pycache__/
+*.pyc
+*.pyo
+ocpp_billing/ocpp_billing.db
