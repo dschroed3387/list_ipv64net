@@ -31,8 +31,8 @@ def get_session(session_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{session_id}/invoice", response_model=schemas.InvoiceOut)
-def get_invoice(session_id: int, db: Session = Depends(get_db)):
-    """Generate a structured invoice for a completed charging session."""
+def get_invoice_detail(session_id: int, db: Session = Depends(get_db)):
+    """Structured billing detail for a charging session."""
     s = db.query(models.ChargingSession).filter_by(id=session_id).first()
     if not s:
         raise HTTPException(404, "Session not found")
@@ -65,6 +65,7 @@ def get_invoice(session_id: int, db: Session = Depends(get_db)):
         cost_connection=s.cost_connection,
         cost_blocking=s.cost_blocking,
         total_cost=s.total_cost,
+        co2_saved_kg=s.co2_saved_kg or 0.0,
         status=s.status,
         stop_reason=s.stop_reason,
     )

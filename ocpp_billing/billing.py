@@ -44,14 +44,11 @@ def calculate_cost(
     total_seconds = (session_end - session_start).total_seconds()
     duration_minutes = max(0.0, total_seconds / 60.0)
 
-    # Charging time = from session start until EV stopped drawing power (or session end)
     charging_end = charging_stopped_at if charging_stopped_at else session_end
     charging_seconds = (charging_end - session_start).total_seconds()
     charging_minutes = max(0.0, charging_seconds / 60.0)
 
-    # Idle time = from charging end until session end
     idle_minutes = max(0.0, duration_minutes - charging_minutes)
-    # Blocking fee only applies beyond the grace period
     blocking_minutes = max(0.0, idle_minutes - blocking_grace_period_minutes)
 
     cost_energy = round(energy_kwh * price_per_kwh, 4)
@@ -71,3 +68,43 @@ def calculate_cost(
         cost_blocking=cost_blocking,
         total_cost=total_cost,
     )
+
+
+def resolve_tariff_period(tariff, session_start: datetime):
+    """
+    Return the highest-priority TariffPeriod matching session_start, or None.
+    weekdays: comma-separated 0=Mon…6=Sun; empty means every day.
+    hour_from/to: inclusive hour range (handles overnight wrap, e.g. 22–6).
+    """
+    if not tariff or not tariff.periods:
+        return None
+
+    weekday = session_start.weekday()
+    hour = session_start.hour
+
+    matching = []
+    for period in tariff.periods:
+        if period.weekdays:
+            try:
+                allowed = {int(d.strip()) for d in period.weekdays.split(",") if d.strip()}
+            except ValueError:
+                continue
+            if weekday not in allowed:
+                continue
+
+        if period.hour_from <= period.hour_to:
+            in_range = period.hour_from <= hour <= period.hour_to
+        else:
+            in_range = hour >= period.hour_from or hour <= period.hour_to
+
+        if in_range:
+            matching.append(period)
+
+    return max(matching, key=lambda p: p.priority) if matching else None
+
+
+def vat_breakdown(gross: float, vat_rate: float) -> tuple[float, float, float]:
+    """Return (net, vat_amount, gross) given a gross amount and VAT rate."""
+    net = round(gross / (1 + vat_rate), 2)
+    vat_amount = round(gross - net, 2)
+    return net, vat_amount, round(gross, 2)

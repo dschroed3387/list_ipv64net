@@ -3,13 +3,16 @@ OCPP 1.6 charge point handler.
 
 Each connecting charge point gets its own ChargePoint16 instance.
 Authorize checks local cards first, then OCPI tokens (Fremdkarten).
-StopTransaction creates an OcpiCdr for roaming sessions and pushes it async.
+StartTransaction resolves dynamic tariff periods and applies them.
+StopTransaction: calculates billing, creates OCPI CDR for roaming sessions,
+creates an Invoice for local customer sessions, and launches async tasks for
+CDR push and PDF generation.
 """
 
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import WebSocket
 from ocpp.routing import on
@@ -21,7 +24,8 @@ from ocpp.v16.enums import (
     RegistrationStatus,
 )
 
-from billing import calculate_cost
+from billing import calculate_cost, resolve_tariff_period, vat_breakdown
+import connection_registry
 from database import SessionLocal
 import models
 
@@ -41,6 +45,11 @@ def _parse_dt(value: str | None) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+def _get_setting(db, key: str, default: str = "") -> str:
+    s = db.query(models.SystemSettings).filter_by(key=key).first()
+    return s.value if s else default
 
 
 class _StarletteAdapter:
@@ -166,13 +175,11 @@ class ChargePoint16(OcppCp):
     async def on_authorize(self, id_tag: str, **kwargs):
         db = self._get_db()
         try:
-            # 1. Check local card
             card = db.query(models.Card).filter_by(rfid_tag=id_tag, is_active=True).first()
             if card:
                 logger.info("Authorized local card %s for customer_id=%d", id_tag, card.customer_id)
                 return call_result.Authorize(id_tag_info={"status": AuthorizationStatus.accepted})
 
-            # 2. Check OCPI token (Fremdkarte)
             ocpi_tok = db.query(models.OcpiToken).filter_by(uid=id_tag, valid=True).first()
             if ocpi_tok:
                 party = ocpi_tok.party
@@ -200,16 +207,18 @@ class ChargePoint16(OcppCp):
         try:
             start_time = _parse_dt(timestamp) or _utcnow()
 
-            # 1. Try local card
+            # 1. Local card
             card = db.query(models.Card).filter_by(rfid_tag=id_tag, is_active=True).first()
             if card:
                 tariff = self._resolve_tariff(db, card.customer_id)
+                period = resolve_tariff_period(tariff, start_time) if tariff else None
                 session = models.ChargingSession(
                     charge_point_db_id=self._db_cp_id,
                     connector_id=connector_id,
                     card_id=card.id,
                     customer_id=card.customer_id,
                     tariff_id=tariff.id if tariff else None,
+                    tariff_period_id=period.id if period else None,
                     meter_start=float(meter_start),
                     start_time=start_time,
                     cost_connection=tariff.connection_fee if tariff else 0.0,
@@ -220,20 +229,28 @@ class ChargePoint16(OcppCp):
                 db.refresh(session)
                 session.transaction_id = session.id
                 db.commit()
-                logger.info("StartTransaction (local): session_id=%d tag=%s", session.id, id_tag)
+                if period:
+                    logger.info(
+                        "StartTransaction (local): session_id=%d tag=%s period='%s'",
+                        session.id, id_tag, period.name,
+                    )
+                else:
+                    logger.info("StartTransaction (local): session_id=%d tag=%s", session.id, id_tag)
                 return call_result.StartTransaction(
                     transaction_id=session.id,
                     id_tag_info={"status": AuthorizationStatus.accepted},
                 )
 
-            # 2. Try OCPI token (Fremdkarte) – use default tariff for billing
+            # 2. OCPI token (Fremdkarte)
             ocpi_tok = db.query(models.OcpiToken).filter_by(uid=id_tag, valid=True).first()
             if ocpi_tok:
                 tariff = db.query(models.Tariff).filter_by(is_default=True).first()
+                period = resolve_tariff_period(tariff, start_time) if tariff else None
                 session = models.ChargingSession(
                     charge_point_db_id=self._db_cp_id,
                     connector_id=connector_id,
                     tariff_id=tariff.id if tariff else None,
+                    tariff_period_id=period.id if period else None,
                     ocpi_token_id=ocpi_tok.id,
                     meter_start=float(meter_start),
                     start_time=start_time,
@@ -245,8 +262,10 @@ class ChargePoint16(OcppCp):
                 db.refresh(session)
                 session.transaction_id = session.id
                 db.commit()
-                logger.info("StartTransaction (OCPI roaming): session_id=%d tag=%s party=%s/%s",
-                            session.id, id_tag, ocpi_tok.party.country_code, ocpi_tok.party.party_id)
+                logger.info(
+                    "StartTransaction (OCPI roaming): session_id=%d tag=%s party=%s/%s",
+                    session.id, id_tag, ocpi_tok.party.country_code, ocpi_tok.party.party_id,
+                )
                 return call_result.StartTransaction(
                     transaction_id=session.id,
                     id_tag_info={"status": AuthorizationStatus.accepted},
@@ -322,6 +341,8 @@ class ChargePoint16(OcppCp):
     ):
         db = self._get_db()
         cdr_id_to_push: int | None = None
+        session_id_for_invoice: int | None = None
+
         try:
             session = db.query(models.ChargingSession).filter_by(transaction_id=transaction_id).first()
             if not session:
@@ -335,18 +356,29 @@ class ChargePoint16(OcppCp):
 
             if session.start_time and session.status == "active":
                 tariff = session.tariff
+                period = session.tariff_period
+
+                # Apply dynamic period pricing if a period was matched at start
+                if period:
+                    price_per_kwh = period.price_per_kwh
+                    price_per_minute = period.price_per_minute
+                else:
+                    price_per_kwh = tariff.price_per_kwh if tariff else 0.0
+                    price_per_minute = tariff.price_per_minute if tariff else 0.0
+
                 result = calculate_cost(
                     meter_start_wh=session.meter_start,
                     meter_stop_wh=session.meter_stop,
                     session_start=session.start_time,
                     session_end=end_time,
                     charging_stopped_at=session.charging_stopped_at,
-                    price_per_kwh=tariff.price_per_kwh if tariff else 0.0,
-                    price_per_minute=tariff.price_per_minute if tariff else 0.0,
+                    price_per_kwh=price_per_kwh,
+                    price_per_minute=price_per_minute,
                     connection_fee=tariff.connection_fee if tariff else 0.0,
                     blocking_fee_per_minute=tariff.blocking_fee_per_minute if tariff else 0.0,
                     blocking_grace_period_minutes=tariff.blocking_grace_period_minutes if tariff else 0,
                 )
+
                 session.energy_kwh = result.energy_kwh
                 session.duration_minutes = result.duration_minutes
                 session.charging_minutes = result.charging_minutes
@@ -356,6 +388,10 @@ class ChargePoint16(OcppCp):
                 session.cost_connection = result.cost_connection
                 session.cost_blocking = result.cost_blocking
                 session.total_cost = result.total_cost
+
+                # CO₂ savings (kg) vs. equivalent ICE vehicle
+                co2_factor = 0.67  # overridden by SystemSettings at invoice time
+                session.co2_saved_kg = round(result.energy_kwh * co2_factor, 3)
 
                 if session.card:
                     session.card.balance = max(0.0, session.card.balance - result.total_cost)
@@ -369,7 +405,7 @@ class ChargePoint16(OcppCp):
                     result.cost_energy, result.cost_time, result.cost_connection, result.cost_blocking,
                 )
 
-                # ── OCPI CDR for roaming sessions ──────────────────────────
+                # OCPI CDR for roaming sessions
                 if session.ocpi_token_id:
                     ocpi_tok = session.ocpi_token
                     cp = session.charge_point
@@ -394,16 +430,88 @@ class ChargePoint16(OcppCp):
                     cdr_id_to_push = cdr.id
                     logger.info("Created OCPI CDR %s for roaming session %d", cdr.cdr_id, session.id)
 
+                # Invoice for local customer sessions
+                elif session.customer_id:
+                    session_id_for_invoice = session.id
+
             db.commit()
         finally:
             db.close()
 
-        # Push CDR asynchronously so we don't block the OCPP response
         if cdr_id_to_push:
             from ocpi.cdr_push import push_cdr
             asyncio.create_task(push_cdr(cdr_id_to_push))
 
+        if session_id_for_invoice:
+            asyncio.create_task(_create_invoice(session_id_for_invoice))
+
         return call_result.StopTransaction()
+
+
+# ─── Invoice creation (background task) ──────────────────────────────────────
+
+async def _create_invoice(session_id: int) -> None:
+    """Create Invoice record and generate PDF. Runs as asyncio background task."""
+    db = SessionLocal()
+    try:
+        session = db.query(models.ChargingSession).filter_by(id=session_id).first()
+        if not session:
+            return
+
+        # Read settings
+        vat_rate   = float(_get_setting(db, "vat_rate", "0.19"))
+        due_days   = int(_get_setting(db, "invoice_due_days", "14"))
+        auto_email = _get_setting(db, "auto_send_email", "false").lower() == "true"
+        co2_factor = float(_get_setting(db, "co2_factor_kg_per_kwh", "0.67"))
+
+        # Update CO₂ savings with configured factor
+        session.co2_saved_kg = round(session.energy_kwh * co2_factor, 3)
+
+        now = _utcnow()
+        year = now.year
+        prefix = f"RE-{year}-"
+        last = (
+            db.query(models.Invoice)
+            .filter(models.Invoice.invoice_number.like(f"{prefix}%"))
+            .order_by(models.Invoice.invoice_number.desc())
+            .first()
+        )
+        seq = int(last.invoice_number.split("-")[-1]) + 1 if last else 1
+        invoice_number = f"{prefix}{seq:06d}"
+
+        net, vat_amount, gross = vat_breakdown(session.total_cost, vat_rate)
+
+        invoice = models.Invoice(
+            invoice_number=invoice_number,
+            session_db_id=session.id,
+            customer_id=session.customer_id,
+            invoice_date=now,
+            due_date=now + timedelta(days=due_days),
+            amount_net=net,
+            vat_rate=vat_rate,
+            vat_amount=vat_amount,
+            amount_gross=gross,
+            currency="EUR",
+            co2_saved_kg=session.co2_saved_kg,
+            status="ISSUED",
+        )
+        db.add(invoice)
+        db.commit()
+        db.refresh(invoice)
+
+        logger.info("Created invoice %s for session %d", invoice_number, session_id)
+
+        from invoice.generator import generate_invoice_pdf
+        generate_invoice_pdf(invoice.id, db)
+
+        if auto_email:
+            from invoice.email_sender import send_invoice_email
+            await send_invoice_email(invoice.id, db)
+
+    except Exception as e:
+        logger.error("Invoice creation failed for session %d: %s", session_id, e)
+    finally:
+        db.close()
 
 
 # ─── WebSocket entry point ────────────────────────────────────────────────────
@@ -412,7 +520,11 @@ async def on_connect(websocket: WebSocket, charge_point_id: str):
     await websocket.accept(subprotocol="ocpp1.6")
     logger.info("Charge point connected: %s", charge_point_id)
     cp = ChargePoint16(charge_point_id, websocket)
+    connection_registry.register(charge_point_id, cp)
     try:
         await cp.start()
     except Exception as exc:
         logger.info("Charge point %s disconnected: %s", charge_point_id, exc)
+    finally:
+        connection_registry.unregister(charge_point_id)
+        logger.info("Charge point %s unregistered", charge_point_id)

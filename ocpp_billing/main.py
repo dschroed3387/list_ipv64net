@@ -22,11 +22,14 @@ from fastapi.staticfiles import StaticFiles
 
 from database import Base, SessionLocal, engine
 from api import customers, tariffs, cards, sessions, charge_points, stats
+from api.invoices import router as invoices_router
+from api.settings_api import router as settings_router, seed_default_settings
 from ocpi.router import standard as ocpi_standard, admin as ocpi_admin
 from ocpp_handler import on_connect
 import models  # noqa: F401 – required so SQLAlchemy registers all tables
 
 STATIC_DIR = Path(__file__).parent / "static"
+INVOICES_DIR = Path(__file__).parent / "invoices"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,14 +40,15 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
-    _seed_default_tariff()
+    INVOICES_DIR.mkdir(exist_ok=True)
+    _seed()
     yield
 
 
-def _seed_default_tariff():
-    """Create a sensible default tariff if none exists."""
+def _seed():
     db = SessionLocal()
     try:
+        # Default tariff
         if not db.query(models.Tariff).filter_by(is_default=True).first():
             db.add(models.Tariff(
                 name="Standard",
@@ -57,6 +61,9 @@ def _seed_default_tariff():
                 is_default=True,
             ))
             db.commit()
+
+        # System settings
+        seed_default_settings(db)
     finally:
         db.close()
 
@@ -65,9 +72,10 @@ app = FastAPI(
     title="OCPP Charging Station Billing System",
     description=(
         "Manages charging stations via OCPP 1.6, with per-customer tariffs, "
-        "RFID card billing, and configurable Blockiergebühr (blocking fee)."
+        "RFID card billing, dynamic pricing periods, auto-generated PDF invoices, "
+        "and OCPI 2.2.1 roaming support."
     ),
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -78,19 +86,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(customers.router, prefix="/api/customers", tags=["Customers"])
-app.include_router(tariffs.router, prefix="/api/tariffs", tags=["Tariffs"])
-app.include_router(cards.router, prefix="/api/cards", tags=["Cards"])
-app.include_router(sessions.router, prefix="/api/sessions", tags=["Sessions"])
+app.include_router(customers.router,     prefix="/api/customers",     tags=["Customers"])
+app.include_router(tariffs.router,       prefix="/api/tariffs",       tags=["Tariffs"])
+app.include_router(cards.router,         prefix="/api/cards",         tags=["Cards"])
+app.include_router(sessions.router,      prefix="/api/sessions",      tags=["Sessions"])
 app.include_router(charge_points.router, prefix="/api/charge-points", tags=["Charge Points"])
-app.include_router(stats.router, prefix="/api/stats", tags=["Statistics"])
+app.include_router(stats.router,         prefix="/api/stats",         tags=["Statistics"])
+app.include_router(invoices_router,      prefix="/api/invoices",      tags=["Invoices"])
+app.include_router(settings_router,      prefix="/api/settings",      tags=["Settings"])
 
 # OCPI 2.2.1 – standard endpoints (called by eMSPs)
-app.include_router(ocpi_standard, prefix="/ocpi", tags=["OCPI 2.2.1"])
+app.include_router(ocpi_standard, prefix="/ocpi",     tags=["OCPI 2.2.1"])
 # OCPI admin management (called by dashboard)
-app.include_router(ocpi_admin, prefix="/api/ocpi", tags=["OCPI Admin"])
+app.include_router(ocpi_admin,    prefix="/api/ocpi", tags=["OCPI Admin"])
 
-# Serve the dashboard SPA
+# Serve dashboard SPA
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 

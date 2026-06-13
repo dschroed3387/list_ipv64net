@@ -12,6 +12,14 @@ def utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+class SystemSettings(Base):
+    """Key-value store for system-wide configuration."""
+    __tablename__ = "system_settings"
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, default="")
+    description = Column(String(500))
+
+
 class Customer(Base):
     __tablename__ = "customers"
 
@@ -19,6 +27,8 @@ class Customer(Base):
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     phone = Column(String(50))
+    company = Column(String(255))       # Firmenname (for B2B invoices)
+    vat_id = Column(String(50))         # Umsatzsteuer-ID (B2B)
     address = Column(Text)
     created_at = Column(DateTime, default=utcnow)
     is_active = Column(Boolean, default=True)
@@ -26,6 +36,7 @@ class Customer(Base):
     cards = relationship("Card", back_populates="customer", cascade="all, delete-orphan")
     tariff = relationship("Tariff", back_populates="customer", uselist=False)
     sessions = relationship("ChargingSession", back_populates="customer")
+    invoices = relationship("Invoice", back_populates="customer")
 
 
 class Tariff(Base):
@@ -55,6 +66,8 @@ class Tariff(Base):
 
     customer = relationship("Customer", back_populates="tariff")
     sessions = relationship("ChargingSession", back_populates="tariff")
+    periods = relationship("TariffPeriod", back_populates="tariff",
+                           cascade="all, delete-orphan", order_by="TariffPeriod.priority.desc()")
 
 
 class Card(Base):
@@ -126,6 +139,12 @@ class ChargingSession(Base):
     cost_blocking = Column(Float, default=0.0)
     total_cost = Column(Float, default=0.0)
 
+    # Applied tariff period (if dynamic pricing was used)
+    tariff_period_id = Column(Integer, ForeignKey("tariff_periods.id"), nullable=True)
+
+    # CO₂ savings vs. equivalent ICE vehicle (kg)
+    co2_saved_kg = Column(Float, default=0.0)
+
     status = Column(String(50), default="active")  # active | completed | failed
     stop_reason = Column(String(100))
 
@@ -136,8 +155,10 @@ class ChargingSession(Base):
     card = relationship("Card", back_populates="sessions")
     customer = relationship("Customer", back_populates="sessions")
     tariff = relationship("Tariff", back_populates="sessions")
+    tariff_period = relationship("TariffPeriod", back_populates="sessions")
     ocpi_token = relationship("OcpiToken", back_populates="sessions")
     ocpi_cdr = relationship("OcpiCdr", back_populates="session", uselist=False)
+    invoice = relationship("Invoice", back_populates="session", uselist=False)
 
 
 # ─── OCPI Models ─────────────────────────────────────────────────────────────
@@ -220,3 +241,59 @@ class OcpiCdr(Base):
 
     session = relationship("ChargingSession", back_populates="ocpi_cdr")
     party = relationship("OcpiParty", back_populates="cdrs")
+
+
+# ─── Invoice / Billing Models ─────────────────────────────────────────────────
+
+class Invoice(Base):
+    """PDF invoice generated after each completed charging session."""
+    __tablename__ = "invoices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    invoice_number = Column(String(50), unique=True, nullable=False, index=True)
+    session_db_id = Column(Integer, ForeignKey("charging_sessions.id"), unique=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), nullable=True)
+
+    invoice_date = Column(DateTime, default=utcnow)
+    due_date = Column(DateTime)
+
+    # VAT breakdown (all amounts in EUR)
+    amount_net = Column(Float, default=0.0)
+    vat_rate = Column(Float, default=0.19)     # e.g. 0.19 = 19%
+    vat_amount = Column(Float, default=0.0)
+    amount_gross = Column(Float, default=0.0)
+    currency = Column(String(3), default="EUR")
+
+    # Environmental info
+    co2_saved_kg = Column(Float, default=0.0)
+
+    # Lifecycle
+    status = Column(String(20), default="ISSUED")  # ISSUED | SENT | PAID | CANCELLED
+    pdf_path = Column(String(500))
+    email_sent_at = Column(DateTime)
+    email_to = Column(String(255))
+    paid_at = Column(DateTime)
+    created_at = Column(DateTime, default=utcnow)
+
+    session = relationship("ChargingSession", back_populates="invoice")
+    customer = relationship("Customer", back_populates="invoices")
+
+
+class TariffPeriod(Base):
+    """Dynamic pricing period – overrides base tariff rates at specific times."""
+    __tablename__ = "tariff_periods"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tariff_id = Column(Integer, ForeignKey("tariffs.id"), nullable=False)
+    name = Column(String(100), nullable=False)   # e.g. "Hauptverbrauchszeit", "Wochenende"
+    # Comma-separated weekday numbers (0=Mon … 6=Sun); empty = every day
+    weekdays = Column(String(20), default="")
+    hour_from = Column(Integer, default=0)       # 0–23 inclusive
+    hour_to = Column(Integer, default=23)        # 0–23 inclusive
+    price_per_kwh = Column(Float, nullable=False)
+    price_per_minute = Column(Float, default=0.0)
+    # Higher priority period wins when multiple periods match
+    priority = Column(Integer, default=0)
+
+    tariff = relationship("Tariff", back_populates="periods")
+    sessions = relationship("ChargingSession", back_populates="tariff_period")

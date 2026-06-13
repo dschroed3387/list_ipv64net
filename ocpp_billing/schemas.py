@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
 
@@ -9,6 +9,8 @@ class CustomerCreate(BaseModel):
     name: str
     email: str
     phone: Optional[str] = None
+    company: Optional[str] = None
+    vat_id: Optional[str] = None
     address: Optional[str] = None
 
 
@@ -16,6 +18,8 @@ class CustomerUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
+    company: Optional[str] = None
+    vat_id: Optional[str] = None
     address: Optional[str] = None
     is_active: Optional[bool] = None
 
@@ -25,9 +29,47 @@ class CustomerOut(BaseModel):
     name: str
     email: str
     phone: Optional[str]
+    company: Optional[str]
+    vat_id: Optional[str]
     address: Optional[str]
     is_active: bool
     created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ─── TariffPeriod ─────────────────────────────────────────────────────────────
+
+class TariffPeriodCreate(BaseModel):
+    name: str
+    weekdays: str = Field("", description="Comma-separated weekday numbers 0=Mon…6=Sun, empty=every day")
+    hour_from: int = Field(0, ge=0, le=23)
+    hour_to: int = Field(23, ge=0, le=23)
+    price_per_kwh: float = Field(..., ge=0, description="€/kWh for this period")
+    price_per_minute: float = Field(0.0, ge=0, description="€/min during this period")
+    priority: int = Field(0, ge=0, description="Higher priority wins when multiple periods match")
+
+
+class TariffPeriodUpdate(BaseModel):
+    name: Optional[str] = None
+    weekdays: Optional[str] = None
+    hour_from: Optional[int] = Field(None, ge=0, le=23)
+    hour_to: Optional[int] = Field(None, ge=0, le=23)
+    price_per_kwh: Optional[float] = Field(None, ge=0)
+    price_per_minute: Optional[float] = Field(None, ge=0)
+    priority: Optional[int] = Field(None, ge=0)
+
+
+class TariffPeriodOut(BaseModel):
+    id: int
+    tariff_id: int
+    name: str
+    weekdays: str
+    hour_from: int
+    hour_to: int
+    price_per_kwh: float
+    price_per_minute: float
+    priority: int
 
     model_config = {"from_attributes": True}
 
@@ -42,7 +84,7 @@ class TariffCreate(BaseModel):
     price_per_minute: float = Field(0.0, ge=0, description="€/min during charging")
     connection_fee: float = Field(0.0, ge=0, description="Flat fee per session (€)")
     blocking_fee_per_minute: float = Field(0.0, ge=0, description="€/min Blockiergebühr")
-    blocking_grace_period_minutes: int = Field(10, ge=0, description="Grace period before blocking fee starts")
+    blocking_grace_period_minutes: int = Field(10, ge=0)
     is_default: bool = False
 
 
@@ -69,6 +111,7 @@ class TariffOut(BaseModel):
     blocking_grace_period_minutes: int
     is_default: bool
     created_at: datetime
+    periods: list[TariffPeriodOut] = []
 
     model_config = {"from_attributes": True}
 
@@ -143,13 +186,14 @@ class SessionOut(BaseModel):
     cost_connection: float
     cost_blocking: float
     total_cost: float
+    co2_saved_kg: float
     status: str
     stop_reason: Optional[str]
 
     model_config = {"from_attributes": True}
 
 
-# ─── Invoice ─────────────────────────────────────────────────────────────────
+# ─── Invoice (session detail view – existing endpoint) ────────────────────────
 
 class InvoiceOut(BaseModel):
     session_id: int
@@ -176,7 +220,47 @@ class InvoiceOut(BaseModel):
     cost_connection: float
     cost_blocking: float
     total_cost: float
+    co2_saved_kg: float
     status: str
     stop_reason: Optional[str]
 
     model_config = {"from_attributes": True}
+
+
+# ─── Invoice (DB record) ──────────────────────────────────────────────────────
+
+class InvoiceRecordOut(BaseModel):
+    id: int
+    invoice_number: str
+    session_db_id: Optional[int]
+    customer_id: Optional[int]
+    invoice_date: Optional[datetime]
+    due_date: Optional[datetime]
+    amount_net: float
+    vat_rate: float
+    vat_amount: float
+    amount_gross: float
+    currency: str
+    co2_saved_kg: float
+    status: str
+    pdf_path: Optional[str]
+    email_sent_at: Optional[datetime]
+    email_to: Optional[str]
+    paid_at: Optional[datetime]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ─── System Settings ──────────────────────────────────────────────────────────
+
+class SystemSettingOut(BaseModel):
+    key: str
+    value: str
+    description: Optional[str]
+
+    model_config = {"from_attributes": True}
+
+
+class SystemSettingsUpdate(BaseModel):
+    settings: dict[str, str]

@@ -42,6 +42,7 @@ def live_status(db: Session = Depends(get_db)):
             "is_online": is_online,
             "active_session": {
                 "id": active.id,
+                "transaction_id": active.transaction_id,
                 "start_time": active.start_time.isoformat() if active.start_time else None,
                 "energy_kwh": energy_so_far,
                 "customer_id": active.customer_id,
@@ -74,3 +75,44 @@ def charge_point_sessions(cp_id: int, db: Session = Depends(get_db)):
         .order_by(models.ChargingSession.id.desc())
         .all()
     )
+
+
+@router.post("/{charge_point_id}/remote-start")
+async def remote_start(
+    charge_point_id: str,
+    connector_id: int = 1,
+    id_tag: str = "REMOTE",
+    db: Session = Depends(get_db),
+):
+    """Send RemoteStartTransaction to a connected charge point."""
+    import connection_registry
+    from ocpp.v16 import call as ocpp_call
+
+    cp_handler = connection_registry.get(charge_point_id)
+    if not cp_handler:
+        raise HTTPException(503, f"Charge point '{charge_point_id}' is not connected")
+
+    try:
+        req = ocpp_call.RemoteStartTransaction(connector_id=connector_id, id_tag=id_tag)
+        result = await cp_handler.call(req)
+        return {"status": result.status, "charge_point_id": charge_point_id}
+    except Exception as e:
+        raise HTTPException(500, f"Remote start failed: {e}")
+
+
+@router.post("/{charge_point_id}/remote-stop")
+async def remote_stop(charge_point_id: str, transaction_id: int, db: Session = Depends(get_db)):
+    """Send RemoteStopTransaction to a connected charge point."""
+    import connection_registry
+    from ocpp.v16 import call as ocpp_call
+
+    cp_handler = connection_registry.get(charge_point_id)
+    if not cp_handler:
+        raise HTTPException(503, f"Charge point '{charge_point_id}' is not connected")
+
+    try:
+        req = ocpp_call.RemoteStopTransaction(transaction_id=transaction_id)
+        result = await cp_handler.call(req)
+        return {"status": result.status, "charge_point_id": charge_point_id}
+    except Exception as e:
+        raise HTTPException(500, f"Remote stop failed: {e}")

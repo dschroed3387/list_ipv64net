@@ -196,8 +196,20 @@
 
             <div class="px-5 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400">
               <span>Heartbeat: <span x-text="cp.last_heartbeat ? timeAgo(cp.last_heartbeat) : 'nie'"></span></span>
-              <button @click="navigate('sessions'); sessionFilter.cp_id=cp.id; fetchSessions()"
-                      class="text-blue-500 hover:underline">Sitzungen →</button>
+              <div class="flex items-center gap-2">
+                <button x-show="cp.is_online && !cp.active_session"
+                        @click="remoteStart(cp.charge_point_id)"
+                        class="text-xs bg-green-100 hover:bg-green-200 text-green-700 px-2 py-1 rounded font-medium">
+                  ▶ Start
+                </button>
+                <button x-show="cp.is_online && cp.active_session"
+                        @click="remoteStop(cp.charge_point_id, cp.active_session.transaction_id)"
+                        class="text-xs bg-red-100 hover:bg-red-200 text-red-700 px-2 py-1 rounded font-medium">
+                  ◼ Stop
+                </button>
+                <button @click="navigate('sessions')"
+                        class="text-blue-500 hover:underline">Sitzungen →</button>
+              </div>
             </div>
           </div>
         </template>
@@ -250,6 +262,7 @@
                 <th class="px-4 py-3 text-right">kWh</th>
                 <th class="px-4 py-3 text-right">Dauer</th>
                 <th class="px-4 py-3 text-right">Blockier.</th>
+                <th class="px-4 py-3 text-right">CO₂</th>
                 <th class="px-4 py-3 text-right">Gesamt</th>
                 <th class="px-4 py-3 text-left">Status</th>
                 <th class="px-4 py-3"></th>
@@ -267,6 +280,7 @@
                   <td class="px-4 py-3 text-right" x-text="s.energy_kwh.toFixed(2)"></td>
                   <td class="px-4 py-3 text-right text-xs" x-text="fmtMin(s.duration_minutes)"></td>
                   <td class="px-4 py-3 text-right text-xs" :class="s.cost_blocking>0 ? 'text-orange-600 font-semibold' : 'text-gray-400'" x-text="s.blocking_minutes > 0 ? fmtMin(s.blocking_minutes) : '–'"></td>
+                  <td class="px-4 py-3 text-right text-xs text-green-600" x-text="s.co2_saved_kg > 0 ? s.co2_saved_kg.toFixed(2)+' kg' : '–'"></td>
                   <td class="px-4 py-3 text-right font-semibold" x-text="fmt€(s.total_cost)"></td>
                   <td class="px-4 py-3"><span :class="sessionBadge(s.status)" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="s.status"></span></td>
                   <td class="px-4 py-3">
@@ -275,7 +289,7 @@
                 </tr>
               </template>
               <tr x-show="sessions.length===0">
-                <td colspan="12" class="px-4 py-10 text-center text-gray-400">Keine Ladevorgänge</td>
+                <td colspan="13" class="px-4 py-10 text-center text-gray-400">Keine Ladevorgänge</td>
               </tr>
             </tbody>
           </table>
@@ -745,6 +759,240 @@
 
     </div><!-- /ocpi -->
 
+
+    <!-- ── Invoices ────────────────────────────────────────────────── -->
+    <div x-show="page==='invoices'" x-cloak>
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 mb-4 flex flex-wrap gap-3 items-end">
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Status</label>
+          <select x-model="invoiceFilter.status" @change="fetchInvoices()"
+                  class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-400">
+            <option value="">Alle</option>
+            <option value="ISSUED">Ausgestellt</option>
+            <option value="SENT">Gesendet</option>
+            <option value="PAID">Bezahlt</option>
+            <option value="CANCELLED">Storniert</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-gray-500 block mb-1">Kunde</label>
+          <select x-model="invoiceFilter.customer_id" @change="fetchInvoices()"
+                  class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-400">
+            <option value="">Alle Kunden</option>
+            <template x-for="c in customers" :key="c.id">
+              <option :value="c.id" x-text="c.name"></option>
+            </template>
+          </select>
+        </div>
+        <button @click="invoiceFilter={status:'',customer_id:''}; fetchInvoices()"
+                class="text-xs text-gray-500 hover:text-red-500 border border-gray-200 px-3 py-1.5 rounded-lg">
+          Filter zurücksetzen
+        </button>
+        <div class="ml-auto text-xs text-gray-400" x-text="invoices.length + ' Rechnungen'"></div>
+      </div>
+
+      <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase sticky top-0">
+              <tr>
+                <th class="px-4 py-3 text-left">Rechnungs-Nr.</th>
+                <th class="px-4 py-3 text-left">Kunde</th>
+                <th class="px-4 py-3 text-left">Datum</th>
+                <th class="px-4 py-3 text-left">Fällig</th>
+                <th class="px-4 py-3 text-right">Netto</th>
+                <th class="px-4 py-3 text-right">MwSt.</th>
+                <th class="px-4 py-3 text-right">Brutto</th>
+                <th class="px-4 py-3 text-left">Status</th>
+                <th class="px-4 py-3 text-left">E-Mail</th>
+                <th class="px-4 py-3">Aktionen</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              <template x-for="inv in invoices" :key="inv.id">
+                <tr class="hover:bg-gray-50">
+                  <td class="px-4 py-3 font-mono text-xs font-semibold text-blue-700" x-text="inv.invoice_number"></td>
+                  <td class="px-4 py-3 text-gray-700" x-text="customerName(inv.customer_id)"></td>
+                  <td class="px-4 py-3 text-xs text-gray-500" x-text="fmtDt(inv.invoice_date)"></td>
+                  <td class="px-4 py-3 text-xs" :class="isPastDue(inv) ? 'text-red-600 font-semibold' : 'text-gray-500'" x-text="fmtDate(inv.due_date)"></td>
+                  <td class="px-4 py-3 text-right text-gray-600" x-text="fmt€(inv.amount_net)"></td>
+                  <td class="px-4 py-3 text-right text-gray-400 text-xs" x-text="fmt€(inv.vat_amount)"></td>
+                  <td class="px-4 py-3 text-right font-semibold text-gray-900" x-text="fmt€(inv.amount_gross)"></td>
+                  <td class="px-4 py-3">
+                    <span :class="{
+                      'bg-blue-100 text-blue-700': inv.status==='ISSUED',
+                      'bg-indigo-100 text-indigo-700': inv.status==='SENT',
+                      'bg-green-100 text-green-700': inv.status==='PAID',
+                      'bg-gray-100 text-gray-500': inv.status==='CANCELLED',
+                    }" class="text-xs px-2 py-0.5 rounded-full font-medium" x-text="inv.status"></span>
+                  </td>
+                  <td class="px-4 py-3 text-xs text-gray-400" x-text="inv.email_sent_at ? fmtDate(inv.email_sent_at) : '–'"></td>
+                  <td class="px-4 py-3">
+                    <div class="flex items-center gap-1">
+                      <a :href="'/api/invoices/'+inv.id+'/pdf'" target="_blank"
+                         class="text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 px-2 py-1 rounded whitespace-nowrap" title="PDF herunterladen">
+                        PDF
+                      </a>
+                      <button @click="sendInvoiceEmail(inv.id)"
+                              class="text-xs bg-gray-50 hover:bg-gray-100 text-gray-700 px-2 py-1 rounded whitespace-nowrap" title="Per E-Mail senden">
+                        E-Mail
+                      </button>
+                      <button x-show="inv.status !== 'PAID' && inv.status !== 'CANCELLED'"
+                              @click="markInvoicePaid(inv.id)"
+                              class="text-xs bg-green-50 hover:bg-green-100 text-green-700 px-2 py-1 rounded whitespace-nowrap">
+                        Bezahlt
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="invoices.length===0">
+                <td colspan="10" class="px-4 py-12 text-center text-gray-400">
+                  <div class="text-3xl mb-2">🧾</div>
+                  Keine Rechnungen vorhanden. Rechnungen werden automatisch nach jedem Ladevorgang erstellt.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /invoices -->
+
+
+    <!-- ── Settings ─────────────────────────────────────────────────── -->
+    <div x-show="page==='settings'" x-cloak>
+      <!-- Tabs -->
+      <div class="flex gap-1 mb-5 bg-white rounded-xl shadow-sm border border-gray-100 p-1.5 w-fit">
+        <button @click="settingsTab='company'"
+                :class="settingsTab==='company' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-gray-700'"
+                class="px-4 py-2 text-sm rounded-lg font-medium transition-colors">Firmendaten</button>
+        <button @click="settingsTab='billing'"
+                :class="settingsTab==='billing' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-gray-700'"
+                class="px-4 py-2 text-sm rounded-lg font-medium transition-colors">Abrechnung</button>
+        <button @click="settingsTab='smtp'"
+                :class="settingsTab==='smtp' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:text-gray-700'"
+                class="px-4 py-2 text-sm rounded-lg font-medium transition-colors">E-Mail / SMTP</button>
+      </div>
+
+      <!-- Company tab -->
+      <div x-show="settingsTab==='company'" class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+        <h3 class="text-sm font-semibold text-gray-700 mb-4">Firmendaten (erscheinen auf Rechnungen)</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="form-label">Firmenname *</label>
+            <input x-model="settings.company_name" class="form-input" placeholder="Muster Charging GmbH">
+          </div>
+          <div>
+            <label class="form-label">Website</label>
+            <input x-model="settings.company_website" class="form-input" placeholder="https://muster.de">
+          </div>
+          <div class="md:col-span-2">
+            <label class="form-label">Postanschrift</label>
+            <textarea x-model="settings.company_address" class="form-input" rows="3" placeholder="Musterstraße 1&#10;12345 Musterstadt"></textarea>
+          </div>
+          <div>
+            <label class="form-label">Telefon</label>
+            <input x-model="settings.company_phone" class="form-input" placeholder="+49 30 123456789">
+          </div>
+          <div>
+            <label class="form-label">E-Mail</label>
+            <input x-model="settings.company_email" class="form-input" placeholder="info@muster.de">
+          </div>
+          <div>
+            <label class="form-label">Umsatzsteuer-ID (USt-IdNr)</label>
+            <input x-model="settings.company_vat_id" class="form-input" placeholder="DE123456789">
+          </div>
+          <div>
+            <label class="form-label">Steuernummer</label>
+            <input x-model="settings.company_tax_number" class="form-input" placeholder="12/345/67890">
+          </div>
+          <div>
+            <label class="form-label">IBAN</label>
+            <input x-model="settings.company_iban" class="form-input font-mono" placeholder="DE12 3456 7890 1234 5678 90">
+          </div>
+          <div>
+            <label class="form-label">BIC / SWIFT</label>
+            <input x-model="settings.company_bic" class="form-input font-mono" placeholder="DEUTDEDBXXX">
+          </div>
+          <div>
+            <label class="form-label">Bankname</label>
+            <input x-model="settings.company_bank" class="form-input" placeholder="Deutsche Bank">
+          </div>
+        </div>
+        <div class="mt-5 flex justify-end">
+          <button @click="saveSettings('company')"
+                  class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-5 py-2 rounded-lg font-medium">
+            Firmendaten speichern
+          </button>
+        </div>
+      </div>
+
+      <!-- Billing tab -->
+      <div x-show="settingsTab==='billing'" class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+        <h3 class="text-sm font-semibold text-gray-700 mb-4">Abrechnungseinstellungen</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-xl">
+          <div>
+            <label class="form-label">MwSt-Satz (z.B. 0.19 = 19%)</label>
+            <input x-model="settings.vat_rate" class="form-input" placeholder="0.19" type="number" step="0.01" min="0" max="1">
+          </div>
+          <div>
+            <label class="form-label">Zahlungsziel (Tage)</label>
+            <input x-model="settings.invoice_due_days" class="form-input" placeholder="14" type="number" min="1" max="90">
+          </div>
+          <div>
+            <label class="form-label">CO₂-Faktor (kg/kWh ggü. Verbrenner)</label>
+            <input x-model="settings.co2_factor_kg_per_kwh" class="form-input" placeholder="0.67" type="number" step="0.01" min="0">
+          </div>
+          <div class="flex items-center gap-3 pt-5">
+            <input type="checkbox" id="autoEmail" :checked="settings.auto_send_email==='true'"
+                   @change="settings.auto_send_email = $event.target.checked ? 'true' : 'false'"
+                   class="rounded">
+            <label for="autoEmail" class="text-sm text-gray-700">Rechnung automatisch per E-Mail senden</label>
+          </div>
+        </div>
+        <div class="mt-5 flex justify-end">
+          <button @click="saveSettings('billing')"
+                  class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-5 py-2 rounded-lg font-medium">
+            Speichern
+          </button>
+        </div>
+      </div>
+
+      <!-- SMTP tab -->
+      <div x-show="settingsTab==='smtp'" class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+        <h3 class="text-sm font-semibold text-gray-700 mb-1">SMTP E-Mail-Konfiguration</h3>
+        <p class="text-xs text-gray-400 mb-4">Für den automatischen E-Mail-Versand von PDF-Rechnungen. Verwendet STARTTLS.</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-xl">
+          <div>
+            <label class="form-label">SMTP-Server</label>
+            <input x-model="settings.smtp_host" class="form-input" placeholder="smtp.gmail.com">
+          </div>
+          <div>
+            <label class="form-label">Port (Standard: 587)</label>
+            <input x-model="settings.smtp_port" class="form-input" placeholder="587" type="number">
+          </div>
+          <div>
+            <label class="form-label">Benutzername</label>
+            <input x-model="settings.smtp_user" class="form-input" placeholder="user@example.com">
+          </div>
+          <div>
+            <label class="form-label">Passwort</label>
+            <input x-model="settings.smtp_password" class="form-input" type="password" placeholder="••••••••">
+          </div>
+          <div class="md:col-span-2">
+            <label class="form-label">Absender-Adresse</label>
+            <input x-model="settings.smtp_from" class="form-input" placeholder="rechnung@example.com">
+          </div>
+        </div>
+        <div class="mt-5 flex justify-end">
+          <button @click="saveSettings('smtp')"
+                  class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-5 py-2 rounded-lg font-medium">
+            SMTP-Einstellungen speichern
+          </button>
+        </div>
+      </div>
+    </div><!-- /settings -->
+
   </main>
 </div><!-- /main -->
 
@@ -767,6 +1015,8 @@
           <div><label class="form-label">Name *</label><input x-model="modal.data.name" class="form-input" placeholder="Max Mustermann"></div>
           <div><label class="form-label">E-Mail *</label><input x-model="modal.data.email" type="email" class="form-input" placeholder="max@example.de"></div>
           <div><label class="form-label">Telefon</label><input x-model="modal.data.phone" class="form-input" placeholder="+49 123 456789"></div>
+          <div><label class="form-label">Firma (für B2B-Rechnungen)</label><input x-model="modal.data.company" class="form-input" placeholder="Muster GmbH"></div>
+          <div><label class="form-label">USt-IdNr. (B2B)</label><input x-model="modal.data.vat_id" class="form-input font-mono" placeholder="DE123456789"></div>
           <div><label class="form-label">Adresse</label><textarea x-model="modal.data.address" class="form-input" rows="2" placeholder="Musterstraße 1, 12345 Stadt"></textarea></div>
           <template x-if="modal.type==='edit-customer'">
             <div class="flex items-center gap-2"><input type="checkbox" x-model="modal.data.is_active" id="cActive" class="rounded"><label for="cActive" class="text-sm text-gray-700">Konto aktiv</label></div>
@@ -946,6 +1196,9 @@
               </div>
             </div>
           </div>
+          <div x-show="modal.data.co2_saved_kg > 0" class="bg-green-50 border border-green-200 rounded-lg px-4 py-2 text-xs text-green-700">
+            CO₂ eingespart: <strong x-text="(modal.data.co2_saved_kg||0).toFixed(2) + ' kg'"></strong> im Vgl. zu Verbrenner
+          </div>
           <div class="text-xs text-gray-400 text-right" x-text="'Status: ' + (modal.data.status||'–') + (modal.data.stop_reason ? ' · ' + modal.data.stop_reason : '')"></div>
         </div>
       </template>
@@ -1008,6 +1261,8 @@ function app() {
       {id:'cards',     icon:'💳', label:'Karten'},
       {id:'statistics',icon:'📈', label:'Statistiken'},
       {id:'ocpi',      icon:'🌐', label:'OCPI Roaming'},
+      {id:'invoices',  icon:'🧾', label:'Rechnungen'},
+      {id:'settings',  icon:'⚙️',  label:'Einstellungen'},
     ],
 
     pageTitle: 'Dashboard',
@@ -1039,6 +1294,14 @@ function app() {
     ocpiFilter: {party_id: '', cdr_status: ''},
     ocpiTab: 'parties',  // parties | tokens | cdrs
 
+    // Invoices state
+    invoices: [],
+    invoiceFilter: {status: '', customer_id: ''},
+
+    // Settings state
+    settings: {},
+    settingsTab: 'company',  // company | smtp | billing
+
     async init() {
       await this.navigate('dashboard');
       this._timer = setInterval(() => {
@@ -1058,6 +1321,8 @@ function app() {
         cards:     ['Karten', 'RFID-Kartenverwaltung'],
         statistics:['Statistiken', 'Umsatz- und Verbrauchsauswertung'],
         ocpi:      ['OCPI Roaming', 'Fremdkarten & eMSP-Schnittstelle (OCPI 2.2.1)'],
+        invoices:  ['Rechnungen', 'Alle generierten PDF-Rechnungen'],
+        settings:  ['Einstellungen', 'Firmendaten, SMTP, Steuer & Abrechnung'],
       };
       [this.pageTitle, this.pageSubtitle] = titles[p] || [p, ''];
       await this.refreshPage(false);
@@ -1090,6 +1355,10 @@ function app() {
           await this.loadStatCharts();
         } else if (this.page === 'ocpi') {
           await Promise.all([this.fetchOcpiStats(), this.fetchOcpiParties(), this.fetchOcpiTokens(), this.fetchOcpiCdrs()]);
+        } else if (this.page === 'invoices') {
+          await Promise.all([this.fetchInvoices(), this.fetchCustomers()]);
+        } else if (this.page === 'settings') {
+          await this.fetchSettings();
         }
         this.lastRefresh = new Date().toLocaleTimeString('de-DE');
       } finally {
@@ -1194,6 +1463,72 @@ function app() {
     partyName(id) {
       const p = this.ocpiParties.find(p => p.id === id);
       return p ? `${p.country_code}/${p.party_id} ${p.name||''}`.trim() : `#${id}`;
+    },
+
+    // ── Invoices ──────────────────────────────────────────────────────
+    async fetchInvoices() {
+      let url = '/api/invoices/?';
+      if (this.invoiceFilter.status)      url += `status=${this.invoiceFilter.status}&`;
+      if (this.invoiceFilter.customer_id) url += `customer_id=${this.invoiceFilter.customer_id}&`;
+      const r = await fetch(url);
+      this.invoices = await r.json();
+    },
+    async sendInvoiceEmail(id) {
+      try {
+        await this.api('POST', `/api/invoices/${id}/send-email`);
+        this.showToast('E-Mail wurde gesendet');
+        await this.fetchInvoices();
+      } catch(e) { this.showToast(e.message, 'error'); }
+    },
+    async markInvoicePaid(id) {
+      if (!confirm('Rechnung als bezahlt markieren?')) return;
+      try {
+        await this.api('POST', `/api/invoices/${id}/mark-paid`);
+        this.showToast('Als bezahlt markiert');
+        await this.fetchInvoices();
+      } catch(e) { this.showToast(e.message, 'error'); }
+    },
+
+    // ── Settings ──────────────────────────────────────────────────────
+    async fetchSettings() {
+      const r = await fetch('/api/settings/');
+      const list = await r.json();
+      this.settings = Object.fromEntries(list.map(s => [s.key, s.value]));
+    },
+    async saveSettings(tab) {
+      const keys = {
+        company: ['company_name','company_address','company_tax_number','company_vat_id',
+                  'company_iban','company_bic','company_bank','company_phone','company_email','company_website'],
+        billing: ['vat_rate','invoice_due_days','auto_send_email','co2_factor_kg_per_kwh'],
+        smtp:    ['smtp_host','smtp_port','smtp_user','smtp_password','smtp_from'],
+      };
+      const payload = {};
+      for (const k of (keys[tab] || [])) {
+        if (this.settings[k] !== undefined) payload[k] = String(this.settings[k]);
+      }
+      try {
+        await this.api('PUT', '/api/settings/', {settings: payload});
+        this.showToast('Einstellungen gespeichert');
+      } catch(e) { this.showToast(e.message, 'error'); }
+    },
+
+    // ── Remote Start / Stop ───────────────────────────────────────────
+    async remoteStart(cpId) {
+      const idTag = prompt('RFID-Tag für Remote-Start:', 'REMOTE');
+      if (!idTag) return;
+      try {
+        const r = await this.api('POST', `/api/charge-points/${cpId}/remote-start?id_tag=${encodeURIComponent(idTag)}&connector_id=1`);
+        this.showToast(`Remote Start: ${r.status}`);
+        await this.fetchStations();
+      } catch(e) { this.showToast(e.message, 'error'); }
+    },
+    async remoteStop(cpId, txId) {
+      if (!confirm('Ladevorgang remote stoppen?')) return;
+      try {
+        const r = await this.api('POST', `/api/charge-points/${cpId}/remote-stop?transaction_id=${txId}`);
+        this.showToast(`Remote Stop: ${r.status}`);
+        await this.fetchStations();
+      } catch(e) { this.showToast(e.message, 'error'); }
     },
 
     // ── CRUD ──────────────────────────────────────────────────────────
@@ -1338,6 +1673,14 @@ function app() {
     // ── Helpers ───────────────────────────────────────────────────────
 
     fmt€(v) { return (v!=null?v:0).toFixed(2) + ' €'; },
+    fmtDate(v) {
+      if (!v) return '–';
+      return new Date(v.includes('Z')||v.includes('+') ? v : v+'Z').toLocaleDateString('de-DE');
+    },
+    isPastDue(inv) {
+      if (!inv.due_date || inv.status === 'PAID' || inv.status === 'CANCELLED') return false;
+      return new Date(inv.due_date) < new Date();
+    },
     fmtDt(v) {
       if (!v) return '–';
       return new Date(v.includes('Z')||v.includes('+') ? v : v+'Z').toLocaleString('de-DE');
