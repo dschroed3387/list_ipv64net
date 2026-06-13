@@ -493,6 +493,258 @@
       </div>
     </div><!-- /statistics -->
 
+
+    <!-- ── OCPI Roaming ───────────────────────────────────────────────── -->
+    <div x-show="page==='ocpi'" x-cloak>
+
+      <!-- KPI cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6" x-show="ocpiStats">
+        <div class="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+          <div class="text-gray-500 text-xs font-medium uppercase tracking-wide mb-1">Partner (eMSPs)</div>
+          <div class="text-3xl font-bold text-blue-600" x-text="ocpiStats?.parties ?? '–'"></div>
+          <div class="text-xs text-gray-400 mt-1">Verbunden: <span x-text="ocpiStats?.connected_parties ?? 0"></span></div>
+        </div>
+        <div class="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+          <div class="text-gray-500 text-xs font-medium uppercase tracking-wide mb-1">Fremdkarten</div>
+          <div class="text-3xl font-bold text-emerald-600" x-text="ocpiStats?.valid_tokens ?? '–'"></div>
+          <div class="text-xs text-gray-400 mt-1">Gesamt: <span x-text="ocpiStats?.total_tokens ?? 0"></span></div>
+        </div>
+        <div class="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+          <div class="text-gray-500 text-xs font-medium uppercase tracking-wide mb-1">CDRs ausstehend</div>
+          <div class="text-3xl font-bold text-amber-500" x-text="ocpiStats?.pending_cdrs ?? '–'"></div>
+          <div class="text-xs text-gray-400 mt-1">Gesendet: <span x-text="ocpiStats?.sent_cdrs ?? 0"></span></div>
+        </div>
+        <div class="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+          <div class="text-gray-500 text-xs font-medium uppercase tracking-wide mb-1">CDRs fehlgeschlagen</div>
+          <div class="text-3xl font-bold text-red-500" x-text="ocpiStats?.failed_cdrs ?? '–'"></div>
+          <div class="text-xs text-gray-400 mt-1">Manuell erneut senden möglich</div>
+        </div>
+      </div>
+
+      <!-- Info box -->
+      <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-5 text-sm text-blue-800">
+        <strong>OCPI 2.2.1 Endpunkte (für eMSPs):</strong>
+        <code class="bg-blue-100 px-1 rounded ml-1">GET /ocpi/versions</code> ·
+        <code class="bg-blue-100 px-1 rounded">POST /ocpi/2.2/credentials</code> ·
+        <code class="bg-blue-100 px-1 rounded">PUT /ocpi/2.2/tokens/{cc}/{pid}/{uid}</code> ·
+        <code class="bg-blue-100 px-1 rounded">GET /ocpi/2.2/locations</code> ·
+        <code class="bg-blue-100 px-1 rounded">GET /ocpi/2.2/cdrs</code>
+      </div>
+
+      <!-- Tab switcher -->
+      <div class="flex gap-1 mb-4 bg-gray-100 p-1 rounded-lg w-fit">
+        <template x-for="tab in [{id:'parties',label:'Partner (eMSPs)'},{id:'tokens',label:'Fremdkarten'},{id:'cdrs',label:'CDRs (Abrechnungsbelege)'}]" :key="tab.id">
+          <button @click="ocpiTab=tab.id; if(tab.id==='tokens') fetchOcpiTokens(); if(tab.id==='cdrs') fetchOcpiCdrs();"
+                  :class="ocpiTab===tab.id ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'"
+                  class="px-4 py-2 rounded-md text-sm font-medium transition-all"
+                  x-text="tab.label"></button>
+        </template>
+      </div>
+
+      <!-- ── Partners tab ── -->
+      <div x-show="ocpiTab==='parties'">
+        <div class="flex justify-end mb-3">
+          <button @click="openModal('create-party',{role:'EMSP',status:'PENDING',our_token:''})"
+                  class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded-lg">
+            + Neuer eMSP-Partner
+          </button>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+              <tr>
+                <th class="px-4 py-3 text-left">Land/ID</th>
+                <th class="px-4 py-3 text-left">Name</th>
+                <th class="px-4 py-3 text-left">Rolle</th>
+                <th class="px-4 py-3 text-left">Unser Token</th>
+                <th class="px-4 py-3 text-right">Karten</th>
+                <th class="px-4 py-3 text-right">CDRs</th>
+                <th class="px-4 py-3 text-left">Status</th>
+                <th class="px-4 py-3 text-left">Letzte CDR-URL</th>
+                <th class="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              <template x-for="p in ocpiParties" :key="p.id">
+                <tr class="hover:bg-gray-50">
+                  <td class="px-4 py-3 font-mono font-bold" x-text="p.country_code + '/' + p.party_id"></td>
+                  <td class="px-4 py-3 font-medium" x-text="p.name||'–'"></td>
+                  <td class="px-4 py-3">
+                    <span class="bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full" x-text="p.role"></span>
+                  </td>
+                  <td class="px-4 py-3 font-mono text-xs text-gray-400 max-w-[160px] truncate" x-text="p.our_token" :title="p.our_token"></td>
+                  <td class="px-4 py-3 text-right" x-text="p.token_count"></td>
+                  <td class="px-4 py-3 text-right" x-text="p.cdr_count"></td>
+                  <td class="px-4 py-3">
+                    <span :class="{
+                      'bg-green-100 text-green-700': p.status==='CONNECTED',
+                      'bg-yellow-100 text-yellow-700': p.status==='PENDING',
+                      'bg-red-100 text-red-600': p.status==='SUSPENDED'
+                    }" class="text-xs px-2 py-0.5 rounded-full font-medium" x-text="p.status"></span>
+                  </td>
+                  <td class="px-4 py-3 text-xs text-gray-400 max-w-[160px] truncate" x-text="p.their_cdrs_url||p.their_versions_url||'–'" :title="p.their_cdrs_url"></td>
+                  <td class="px-4 py-3">
+                    <div class="flex gap-2">
+                      <button @click="openModal('edit-party',{...p})" class="text-blue-500 hover:text-blue-700 text-xs">Bearb.</button>
+                      <button @click="deleteItem('party',p.id)" class="text-red-400 hover:text-red-600 text-xs">Löschen</button>
+                    </div>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="ocpiParties.length===0">
+                <td colspan="9" class="px-4 py-10 text-center text-gray-400">
+                  Noch keine eMSP-Partner. Legen Sie einen an und teilen Sie den Token dem Partner mit.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div><!-- /partners tab -->
+
+      <!-- ── Tokens tab ── -->
+      <div x-show="ocpiTab==='tokens'">
+        <div class="flex flex-wrap gap-3 items-end mb-3">
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">Partner</label>
+            <select x-model.number="ocpiFilter.party_id" @change="fetchOcpiTokens()"
+                    class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-400">
+              <option value="">Alle Partner</option>
+              <template x-for="p in ocpiParties" :key="p.id">
+                <option :value="p.id" x-text="p.country_code+'/'+p.party_id+' · '+(p.name||'')"></option>
+              </template>
+            </select>
+          </div>
+          <div class="ml-auto text-xs text-gray-400" x-text="ocpiTokens.length + ' Fremdkarten'"></div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+              <tr>
+                <th class="px-4 py-3 text-left">UID / RFID</th>
+                <th class="px-4 py-3 text-left">Partner</th>
+                <th class="px-4 py-3 text-left">Vertrags-ID</th>
+                <th class="px-4 py-3 text-left">Bezeichnung</th>
+                <th class="px-4 py-3 text-left">Aussteller</th>
+                <th class="px-4 py-3 text-left">Typ</th>
+                <th class="px-4 py-3 text-left">Whitelist</th>
+                <th class="px-4 py-3 text-center">Gültig</th>
+                <th class="px-4 py-3 text-left">Aktualisiert</th>
+                <th class="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              <template x-for="t in ocpiTokens" :key="t.id">
+                <tr class="hover:bg-gray-50">
+                  <td class="px-4 py-3 font-mono text-xs font-bold" x-text="t.uid"></td>
+                  <td class="px-4 py-3 text-xs" x-text="partyName(t.party_id_ref)"></td>
+                  <td class="px-4 py-3 font-mono text-xs text-gray-500" x-text="t.contract_id||'–'"></td>
+                  <td class="px-4 py-3 text-gray-600" x-text="t.visual_number||'–'"></td>
+                  <td class="px-4 py-3 text-gray-500" x-text="t.issuer||'–'"></td>
+                  <td class="px-4 py-3">
+                    <span class="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded-full" x-text="t.type"></span>
+                  </td>
+                  <td class="px-4 py-3 text-xs" x-text="t.whitelist"></td>
+                  <td class="px-4 py-3 text-center">
+                    <span :class="t.valid ? 'text-green-600' : 'text-red-400'" x-text="t.valid ? '✓' : '✗'"></span>
+                  </td>
+                  <td class="px-4 py-3 text-xs text-gray-400" x-text="fmtDt(t.last_updated)"></td>
+                  <td class="px-4 py-3">
+                    <button @click="deleteOcpiToken(t.id)" class="text-red-400 hover:text-red-600 text-xs">Entfernen</button>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="ocpiTokens.length===0">
+                <td colspan="10" class="px-4 py-10 text-center text-gray-400">
+                  Keine Fremdkarten. eMSPs können Karten per <code>PUT /ocpi/2.2/tokens/{cc}/{pid}/{uid}</code> einspielen.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div><!-- /tokens tab -->
+
+      <!-- ── CDRs tab ── -->
+      <div x-show="ocpiTab==='cdrs'">
+        <div class="flex flex-wrap gap-3 items-end mb-3">
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">Status</label>
+            <select x-model="ocpiFilter.cdr_status" @change="fetchOcpiCdrs()"
+                    class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-400">
+              <option value="">Alle</option>
+              <option value="PENDING">Ausstehend</option>
+              <option value="SENT">Gesendet</option>
+              <option value="FAILED">Fehlgeschlagen</option>
+              <option value="ACCEPTED">Akzeptiert</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs text-gray-500 block mb-1">Partner</label>
+            <select x-model.number="ocpiFilter.party_id" @change="fetchOcpiCdrs()"
+                    class="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-blue-400">
+              <option value="">Alle Partner</option>
+              <template x-for="p in ocpiParties" :key="p.id">
+                <option :value="p.id" x-text="p.country_code+'/'+p.party_id"></option>
+              </template>
+            </select>
+          </div>
+          <div class="ml-auto text-xs text-gray-400" x-text="ocpiCdrs.length + ' CDRs'"></div>
+        </div>
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+              <tr>
+                <th class="px-4 py-3 text-left">CDR-ID</th>
+                <th class="px-4 py-3 text-left">Partner</th>
+                <th class="px-4 py-3 text-left">Token</th>
+                <th class="px-4 py-3 text-right">Energie (kWh)</th>
+                <th class="px-4 py-3 text-right">Betrag</th>
+                <th class="px-4 py-3 text-left">Erstellt</th>
+                <th class="px-4 py-3 text-left">Gesendet</th>
+                <th class="px-4 py-3 text-center">Versuche</th>
+                <th class="px-4 py-3 text-left">Status</th>
+                <th class="px-4 py-3"></th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-50">
+              <template x-for="c in ocpiCdrs" :key="c.id">
+                <tr class="hover:bg-gray-50">
+                  <td class="px-4 py-3 font-mono text-xs text-gray-400 max-w-[140px] truncate" x-text="c.cdr_id" :title="c.cdr_id"></td>
+                  <td class="px-4 py-3 text-xs" x-text="partyName(c.party_id_ref)"></td>
+                  <td class="px-4 py-3 font-mono text-xs" x-text="c.token_uid||'–'"></td>
+                  <td class="px-4 py-3 text-right" x-text="(c.total_energy||0).toFixed(3)"></td>
+                  <td class="px-4 py-3 text-right font-semibold" x-text="fmt€(c.total_cost)"></td>
+                  <td class="px-4 py-3 text-xs text-gray-400" x-text="fmtDt(c.created_at)"></td>
+                  <td class="px-4 py-3 text-xs text-gray-400" x-text="c.sent_at ? fmtDt(c.sent_at) : '–'"></td>
+                  <td class="px-4 py-3 text-center text-xs" x-text="c.push_attempts"></td>
+                  <td class="px-4 py-3">
+                    <span :class="{
+                      'bg-yellow-100 text-yellow-700': c.status==='PENDING',
+                      'bg-green-100 text-green-700': c.status==='SENT'||c.status==='ACCEPTED',
+                      'bg-red-100 text-red-600': c.status==='FAILED'
+                    }" class="text-xs px-2 py-0.5 rounded-full font-medium" x-text="c.status"></span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <button x-show="c.status==='PENDING'||c.status==='FAILED'"
+                            @click="pushCdr(c.id)"
+                            class="text-blue-500 hover:text-blue-700 text-xs whitespace-nowrap">
+                      ↑ Senden
+                    </button>
+                    <div x-show="c.error_message" class="text-red-400 text-xs mt-0.5 max-w-[120px] truncate" :title="c.error_message" x-text="c.error_message"></div>
+                  </td>
+                </tr>
+              </template>
+              <tr x-show="ocpiCdrs.length===0">
+                <td colspan="10" class="px-4 py-10 text-center text-gray-400">
+                  Keine CDRs. CDRs werden automatisch nach Abschluss von Roaming-Sitzungen erstellt.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div><!-- /cdrs tab -->
+
+    </div><!-- /ocpi -->
+
   </main>
 </div><!-- /main -->
 
@@ -595,6 +847,54 @@
           <div>
             <label class="form-label">Betrag aufladen (€) *</label>
             <input x-model.number="modal.data.amount" type="number" step="0.01" min="0.01" class="form-input text-lg" placeholder="20.00">
+          </div>
+        </div>
+      </template>
+
+      <!-- OCPI Party form -->
+      <template x-if="modal.type==='create-party'||modal.type==='edit-party'">
+        <div class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="form-label">Ländercode (2-stellig) *</label>
+              <input x-model="modal.data.country_code" :readonly="modal.type==='edit-party'" class="form-input" placeholder="DE" maxlength="2">
+            </div>
+            <div>
+              <label class="form-label">Party-ID (3-stellig) *</label>
+              <input x-model="modal.data.party_id" :readonly="modal.type==='edit-party'" class="form-input" placeholder="EMP" maxlength="3">
+            </div>
+          </div>
+          <div>
+            <label class="form-label">Rolle</label>
+            <select x-model="modal.data.role" class="form-input">
+              <option value="EMSP">EMSP (e-Mobility Service Provider)</option>
+              <option value="CPO">CPO (Charge Point Operator)</option>
+              <option value="HUB">HUB (Roaming Hub)</option>
+            </select>
+          </div>
+          <div><label class="form-label">Name des Partners</label><input x-model="modal.data.name" class="form-input" placeholder="MeinNetz GmbH"></div>
+          <div><label class="form-label">Website</label><input x-model="modal.data.website" class="form-input" placeholder="https://partner.example.de"></div>
+          <div>
+            <label class="form-label">Unser Token (den der Partner verwenden muss) *</label>
+            <div class="flex gap-2">
+              <input x-model="modal.data.our_token" class="form-input font-mono text-xs flex-1" placeholder="Klick auf Generieren →">
+              <button type="button" @click="generateToken()"
+                      class="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs rounded-lg whitespace-nowrap">
+                Generieren
+              </button>
+            </div>
+            <p class="text-xs text-gray-400 mt-0.5">Diesen Token teilen Sie dem eMSP mit. Er muss ihn im <code>Authorization</code>-Header senden.</p>
+          </div>
+          <div><label class="form-label">Ihr Token (den wir beim CDR-Push verwenden)</label><input x-model="modal.data.their_token" class="form-input font-mono text-xs" placeholder="Vom eMSP erhalten"></div>
+          <div><label class="form-label">Versions-URL des Partners (für CDR-Discovery)</label><input x-model="modal.data.their_versions_url" class="form-input" placeholder="https://partner.example.de/ocpi/versions"></div>
+          <div><label class="form-label">Direkte CDR-URL (optional, überschreibt Discovery)</label><input x-model="modal.data.their_cdrs_url" class="form-input" placeholder="https://partner.example.de/ocpi/2.2/cdrs"></div>
+          <div x-show="modal.type==='edit-party'">
+            <label class="form-label">Status</label>
+            <select x-model="modal.data.status" class="form-input">
+              <option value="PENDING">PENDING</option>
+              <option value="CONNECTED">CONNECTED</option>
+              <option value="SUSPENDED">SUSPENDED</option>
+            </select>
           </div>
         </div>
       </template>
@@ -707,6 +1007,7 @@ function app() {
       {id:'tariffs',   icon:'🏷️', label:'Tarife'},
       {id:'cards',     icon:'💳', label:'Karten'},
       {id:'statistics',icon:'📈', label:'Statistiken'},
+      {id:'ocpi',      icon:'🌐', label:'OCPI Roaming'},
     ],
 
     pageTitle: 'Dashboard',
@@ -730,6 +1031,14 @@ function app() {
 
     charts: {},
 
+    // OCPI state
+    ocpiStats: null,
+    ocpiParties: [],
+    ocpiTokens: [],
+    ocpiCdrs: [],
+    ocpiFilter: {party_id: '', cdr_status: ''},
+    ocpiTab: 'parties',  // parties | tokens | cdrs
+
     async init() {
       await this.navigate('dashboard');
       this._timer = setInterval(() => {
@@ -748,6 +1057,7 @@ function app() {
         tariffs:   ['Tarife', 'Tarif- und Preisgestaltung'],
         cards:     ['Karten', 'RFID-Kartenverwaltung'],
         statistics:['Statistiken', 'Umsatz- und Verbrauchsauswertung'],
+        ocpi:      ['OCPI Roaming', 'Fremdkarten & eMSP-Schnittstelle (OCPI 2.2.1)'],
       };
       [this.pageTitle, this.pageSubtitle] = titles[p] || [p, ''];
       await this.refreshPage(false);
@@ -778,6 +1088,8 @@ function app() {
           await Promise.all([this.fetchCards(), this.fetchCustomers()]);
         } else if (this.page === 'statistics') {
           await this.loadStatCharts();
+        } else if (this.page === 'ocpi') {
+          await Promise.all([this.fetchOcpiStats(), this.fetchOcpiParties(), this.fetchOcpiTokens(), this.fetchOcpiCdrs()]);
         }
         this.lastRefresh = new Date().toLocaleTimeString('de-DE');
       } finally {
@@ -836,6 +1148,54 @@ function app() {
       this.cards = await r.json();
     },
 
+    // ── OCPI fetchers ─────────────────────────────────────────────────
+    async fetchOcpiStats() {
+      const r = await fetch('/api/ocpi/stats');
+      this.ocpiStats = await r.json();
+    },
+    async fetchOcpiParties() {
+      const r = await fetch('/api/ocpi/parties');
+      this.ocpiParties = await r.json();
+    },
+    async fetchOcpiTokens() {
+      const url = this.ocpiFilter.party_id
+        ? `/api/ocpi/tokens?party_id=${this.ocpiFilter.party_id}`
+        : '/api/ocpi/tokens';
+      const r = await fetch(url);
+      this.ocpiTokens = await r.json();
+    },
+    async fetchOcpiCdrs() {
+      let url = '/api/ocpi/cdrs?';
+      if (this.ocpiFilter.cdr_status) url += `status=${this.ocpiFilter.cdr_status}&`;
+      if (this.ocpiFilter.party_id) url += `party_id=${this.ocpiFilter.party_id}&`;
+      const r = await fetch(url);
+      this.ocpiCdrs = await r.json();
+    },
+    async generateToken() {
+      const r = await fetch('/api/ocpi/parties/generate-token');
+      const d = await r.json();
+      this.modal.data.our_token = d.token;
+    },
+    async pushCdr(cdrId) {
+      try {
+        await this.api('POST', `/api/ocpi/cdrs/${cdrId}/push`);
+        this.showToast('CDR-Push gestartet');
+        await this.fetchOcpiCdrs();
+      } catch(e) { this.showToast(e.message,'error'); }
+    },
+    async deleteOcpiToken(id) {
+      if (!confirm('Token wirklich löschen?')) return;
+      try {
+        await this.api('DELETE', `/api/ocpi/tokens/${id}`);
+        await this.fetchOcpiTokens();
+        this.showToast('Token gelöscht');
+      } catch(e) { this.showToast(e.message,'error'); }
+    },
+    partyName(id) {
+      const p = this.ocpiParties.find(p => p.id === id);
+      return p ? `${p.country_code}/${p.party_id} ${p.name||''}`.trim() : `#${id}`;
+    },
+
     // ── CRUD ──────────────────────────────────────────────────────────
 
     openModal(type, data) {
@@ -844,6 +1204,7 @@ function app() {
         'create-tariff':'Neuen Tarif anlegen','edit-tariff':'Tarif bearbeiten',
         'create-card':'Neue Karte registrieren','edit-card':'Karte bearbeiten',
         'add-balance':'Guthaben aufladen','view-invoice':'Rechnung',
+        'create-party':'Neuen OCPI-Partner anlegen','edit-party':'OCPI-Partner bearbeiten',
       };
       this.modal = {show:true, type, title:labels[type]||type, data:{...data}};
     },
@@ -872,6 +1233,12 @@ function app() {
         } else if (this.modal.type === 'add-balance') {
           await this.api('POST', `/api/cards/${d.id}/balance`, {amount: parseFloat(d.amount)});
           await this.fetchCards();
+        } else if (this.modal.type === 'create-party') {
+          await this.api('POST', '/api/ocpi/parties', d);
+          await this.fetchOcpiParties(); await this.fetchOcpiStats();
+        } else if (this.modal.type === 'edit-party') {
+          await this.api('PUT', `/api/ocpi/parties/${d.id}`, d);
+          await this.fetchOcpiParties();
         }
         this.modal.show = false;
         this.showToast('Erfolgreich gespeichert');
@@ -882,12 +1249,13 @@ function app() {
 
     async deleteItem(type, id) {
       if (!confirm('Wirklich löschen?')) return;
-      const ep = {customer:`/api/customers/${id}`,tariff:`/api/tariffs/${id}`,card:`/api/cards/${id}`};
+      const ep = {customer:`/api/customers/${id}`,tariff:`/api/tariffs/${id}`,card:`/api/cards/${id}`,party:`/api/ocpi/parties/${id}`};
       try {
         await this.api('DELETE', ep[type]);
         if (type==='customer') await this.fetchCustomers();
         if (type==='tariff')   await this.fetchTariffs();
         if (type==='card')     await this.fetchCards();
+        if (type==='party')    { await this.fetchOcpiParties(); await this.fetchOcpiStats(); }
         this.showToast('Gelöscht');
       } catch(e) {
         this.showToast(e.message, 'error');

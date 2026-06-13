@@ -129,7 +129,94 @@ class ChargingSession(Base):
     status = Column(String(50), default="active")  # active | completed | failed
     stop_reason = Column(String(100))
 
+    # OCPI roaming: set when session started with a Fremdkarte
+    ocpi_token_id = Column(Integer, ForeignKey("ocpi_tokens.id"), nullable=True)
+
     charge_point = relationship("ChargePoint", back_populates="sessions")
     card = relationship("Card", back_populates="sessions")
     customer = relationship("Customer", back_populates="sessions")
     tariff = relationship("Tariff", back_populates="sessions")
+    ocpi_token = relationship("OcpiToken", back_populates="sessions")
+    ocpi_cdr = relationship("OcpiCdr", back_populates="session", uselist=False)
+
+
+# ─── OCPI Models ─────────────────────────────────────────────────────────────
+
+class OcpiParty(Base):
+    """Registered eMSP / roaming partner for OCPI interoperability."""
+    __tablename__ = "ocpi_parties"
+
+    id = Column(Integer, primary_key=True, index=True)
+    country_code = Column(String(2), nullable=False)   # ISO 3166, e.g. "DE"
+    party_id = Column(String(3), nullable=False)        # 3-letter, e.g. "EMP"
+    role = Column(String(10), default="EMSP")           # EMSP | CPO | HUB
+    name = Column(String(255))
+    website = Column(String(500))
+
+    # Token the eMSP uses when calling our OCPI endpoints
+    our_token = Column(String(255), unique=True, nullable=False)
+    # Token we use when pushing CDRs to the eMSP
+    their_token = Column(String(255))
+    # eMSP's OCPI versions URL (for CDR push discovery)
+    their_versions_url = Column(String(500))
+    # Resolved CDR push URL (cached after handshake)
+    their_cdrs_url = Column(String(500))
+
+    status = Column(String(20), default="PENDING")  # PENDING | CONNECTED | SUSPENDED
+    created_at = Column(DateTime, default=utcnow)
+    last_updated = Column(DateTime, default=utcnow)
+
+    tokens = relationship("OcpiToken", back_populates="party", cascade="all, delete-orphan")
+    cdrs = relationship("OcpiCdr", back_populates="party")
+
+
+class OcpiToken(Base):
+    """RFID card / token issued by an external eMSP (Fremdkarte)."""
+    __tablename__ = "ocpi_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    party_id_ref = Column(Integer, ForeignKey("ocpi_parties.id"), nullable=False)
+
+    uid = Column(String(255), unique=True, nullable=False, index=True)  # RFID UID
+    type = Column(String(20), default="RFID")          # RFID | APP_USER | AD_HOC_USER | OTHER
+    contract_id = Column(String(255))                  # EMA-ID / auth_id
+    visual_number = Column(String(255))                # Human-readable card number
+    issuer = Column(String(255))                       # eMSP name
+    group_id = Column(String(255))                     # Fleet/group identifier
+    valid = Column(Boolean, default=True)
+    whitelist = Column(String(20), default="ALLOWED")  # ALWAYS | ALLOWED | ALLOWED_OFFLINE | NEVER
+    last_updated = Column(DateTime, default=utcnow)
+
+    party = relationship("OcpiParty", back_populates="tokens")
+    sessions = relationship("ChargingSession", back_populates="ocpi_token")
+
+
+class OcpiCdr(Base):
+    """Charge Detail Record – generated after a roaming session, pushed to eMSP."""
+    __tablename__ = "ocpi_cdrs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cdr_id = Column(String(255), unique=True, nullable=False)  # our globally unique CDR ID
+    session_db_id = Column(Integer, ForeignKey("charging_sessions.id"), unique=True)
+    party_id_ref = Column(Integer, ForeignKey("ocpi_parties.id"), nullable=False)
+
+    start_date_time = Column(DateTime)
+    end_date_time = Column(DateTime)
+    token_uid = Column(String(255))
+    contract_id = Column(String(255))
+    charge_point_ocpp_id = Column(String(255))         # human-readable station ID
+
+    total_energy = Column(Float, default=0.0)          # kWh
+    total_time_hours = Column(Float, default=0.0)      # decimal hours
+    total_cost = Column(Float, default=0.0)            # €
+    currency = Column(String(3), default="EUR")
+
+    # Push lifecycle
+    status = Column(String(20), default="PENDING")     # PENDING | SENT | FAILED | ACCEPTED
+    push_attempts = Column(Integer, default=0)
+    sent_at = Column(DateTime)
+    error_message = Column(Text)
+    created_at = Column(DateTime, default=utcnow)
+
+    session = relationship("ChargingSession", back_populates="ocpi_cdr")
+    party = relationship("OcpiParty", back_populates="cdrs")

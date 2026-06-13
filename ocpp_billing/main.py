@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from database import Base, SessionLocal, engine
 from api import customers, tariffs, cards, sessions, charge_points, stats
+from ocpi.router import standard as ocpi_standard, admin as ocpi_admin
 from ocpp_handler import on_connect
 import models  # noqa: F401 – required so SQLAlchemy registers all tables
 
@@ -83,6 +84,11 @@ app.include_router(cards.router, prefix="/api/cards", tags=["Cards"])
 app.include_router(sessions.router, prefix="/api/sessions", tags=["Sessions"])
 app.include_router(charge_points.router, prefix="/api/charge-points", tags=["Charge Points"])
 app.include_router(stats.router, prefix="/api/stats", tags=["Statistics"])
+
+# OCPI 2.2.1 – standard endpoints (called by eMSPs)
+app.include_router(ocpi_standard, prefix="/ocpi", tags=["OCPI 2.2.1"])
+# OCPI admin management (called by dashboard)
+app.include_router(ocpi_admin, prefix="/api/ocpi", tags=["OCPI Admin"])
 
 # Serve the dashboard SPA
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
