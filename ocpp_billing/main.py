@@ -13,14 +13,19 @@ Quick start:
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from database import Base, SessionLocal, engine
-from api import customers, tariffs, cards, sessions, charge_points
+from api import customers, tariffs, cards, sessions, charge_points, stats
 from ocpp_handler import on_connect
 import models  # noqa: F401 – required so SQLAlchemy registers all tables
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,6 +82,10 @@ app.include_router(tariffs.router, prefix="/api/tariffs", tags=["Tariffs"])
 app.include_router(cards.router, prefix="/api/cards", tags=["Cards"])
 app.include_router(sessions.router, prefix="/api/sessions", tags=["Sessions"])
 app.include_router(charge_points.router, prefix="/api/charge-points", tags=["Charge Points"])
+app.include_router(stats.router, prefix="/api/stats", tags=["Statistics"])
+
+# Serve the dashboard SPA
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.websocket("/ocpp/{charge_point_id}")
@@ -85,14 +94,9 @@ async def ocpp_endpoint(websocket: WebSocket, charge_point_id: str):
     await on_connect(websocket, charge_point_id)
 
 
-@app.get("/", tags=["Health"])
-def root():
-    return {
-        "service": "OCPP Billing System",
-        "version": "1.0.0",
-        "ocpp_protocol": "1.6",
-        "docs": "/docs",
-    }
+@app.get("/", tags=["Dashboard"], include_in_schema=False)
+def dashboard():
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 if __name__ == "__main__":

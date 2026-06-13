@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -6,6 +7,48 @@ import models
 import schemas
 
 router = APIRouter()
+
+
+def _utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+@router.get("/live")
+def live_status(db: Session = Depends(get_db)):
+    """All charge points with online flag and active session summary."""
+    now = _utcnow()
+    cps = db.query(models.ChargePoint).all()
+    result = []
+    for cp in cps:
+        active = (
+            db.query(models.ChargingSession)
+            .filter_by(charge_point_db_id=cp.id, status="active")
+            .first()
+        )
+        is_online = (
+            cp.last_heartbeat is not None
+            and (now - cp.last_heartbeat).total_seconds() < 120
+        )
+        energy_so_far = round(
+            max(0, (active.meter_stop - active.meter_start) / 1000) if active else 0, 3
+        )
+        result.append({
+            "id": cp.id,
+            "charge_point_id": cp.charge_point_id,
+            "vendor": cp.vendor,
+            "model": cp.model,
+            "status": cp.status,
+            "last_heartbeat": cp.last_heartbeat.isoformat() if cp.last_heartbeat else None,
+            "is_online": is_online,
+            "active_session": {
+                "id": active.id,
+                "start_time": active.start_time.isoformat() if active.start_time else None,
+                "energy_kwh": energy_so_far,
+                "customer_id": active.customer_id,
+                "connector_id": active.connector_id,
+            } if active else None,
+        })
+    return result
 
 
 @router.get("/", response_model=list[schemas.ChargePointOut])
